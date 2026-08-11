@@ -1,0 +1,66 @@
+name: BBS Archiver
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: '取得するページ数(手動実行時の上書き。過去分の遡り取得に使う)'
+        required: false
+        default: '3'
+  schedule:
+    # 毎日 22:10 UTC = 翌 07:10 JST に実行(前日〜早朝の投稿を確実に拾う)
+    - cron: '10 22 * * *'
+
+# コミットして履歴を蓄積するため書き込み権限が必要
+permissions:
+  contents: write
+
+# 実行が重ならないよう直列化
+concurrency:
+  group: bbs-archiver
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run BBS archiver
+        env:
+          BBS_MAX_PAGES: ${{ github.event.inputs.max_pages || '3' }}
+        run: python bambitch_bbs.py
+
+      - name: Commit new posts and images
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "差分なし: コミットするものはありません"
+          else
+            git commit -m "chore: BBS取得 $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
+
+      - name: Upload snapshot as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbs-snapshot-${{ github.run_number }}
+          path: |
+            posts.json
+            data/
+            img-box/
+          retention-days: 30
+          if-no-files-found: warn
