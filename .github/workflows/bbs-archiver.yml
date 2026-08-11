@@ -59,8 +59,7 @@ jobs:
         with:
           name: bbs-snapshot-${{ github.run_number }}
           path: |
-            posts.json
-            data/
+            bbs_log.xlsx
             img-box/
           retention-days: 30
           if-no-files-found: warn
