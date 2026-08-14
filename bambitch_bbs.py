@@ -103,6 +103,10 @@ def parse_articles(page_html: str) -> list[dict]:
         m_date = RE_DATE.search(chunk)
         if not m_no or not m_date:
             continue
+        # 返信記事(お店の返信など)はスキップ。KENT-WEB は返信を専用テンプレート
+        # (コメント "返信用" / 名前欄に "名前：" ラベル)で出力するので、それを検出する。
+        if "返信用" in chunk or "名前：" in chunk:
+            continue
         no = int(m_no.group(1))
         date_str = f"{m_date.group(1)} {m_date.group(2)}"
         try:
