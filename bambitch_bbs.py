@@ -44,7 +44,10 @@ REPO_DIR = Path(__file__).resolve().parent
 IMG_DIR = REPO_DIR / "img-box"
 XLSX_PATH = REPO_DIR / "bbs_log.xlsx"
 SHEET_NAME = "posts"
-HEADERS = ["No.", "日付", "時刻", "名前", "題名", "本文", "画像ファイル"]
+HEADERS = ["No.", "日付", "時刻", "名前", "出勤者", "題名", "本文", "画像ファイル"]
+
+# お店の公式名義。原則この名義の投稿は記録しないが、出勤者紹介(本文に「担当」)だけ残す。
+STORE_NAME = "★BAMBITCH★"
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -92,6 +95,16 @@ RE_TITLE = re.compile(r'(?i)<FONT\s+SIZE="?\+1"?[^>]*>\s*<B>(.*?)</B>', re.S)
 # 返信記事は "名前：" の後の FONT に入る。いずれも日付直前の <B>…</B></FONT> を取る。
 RE_NAME = re.compile(r"(?is)<B>([^<]*)</B>\s*</FONT>\s*\[\d{4}/")
 RE_BODY = re.compile(r"(?is)<BLOCKQUOTE[^>]*>(.*?)</BLOCKQUOTE>")
+# 営業案内の出勤者紹介ブロック: 「担当は … なのよ」の間に1行1名で並ぶ
+RE_STAFF = re.compile(r"担当は(.*?)なのよ", re.S)
+
+
+def extract_staff(body: str) -> str:
+    """本文の「担当は…なのよ」から出勤者の行を取り出し ' / ' 連結で返す。"""
+    m = RE_STAFF.search(body)
+    region = m.group(1) if m else ""
+    lines = [ln.strip() for ln in region.splitlines() if ln.strip()]
+    return " / ".join(lines)
 
 
 def parse_articles(page_html: str) -> list[dict]:
@@ -131,12 +144,20 @@ def parse_articles(page_html: str) -> list[dict]:
         m_body = RE_BODY.search(chunk)
         body = strip_tags(m_body.group(1)) if m_body else ""
 
+        staff = extract_staff(body)
+
+        # お店(★BAMBITCH★)名義の投稿は原則除外。ただし出勤者紹介
+        # (本文に「担当」= 出勤者あり)は記録として残す。来店客の投稿は対象外なので影響しない。
+        if name == STORE_NAME and "担当" not in body:
+            continue
+
         articles.append(
             {
                 "no": no,
                 "date": dt.strftime("%Y-%m-%d"),
                 "time": dt.strftime("%H:%M:%S"),
                 "name": name,
+                "staff": staff,
                 "title": title,
                 "body": body,
                 "image_filename": img_filename,
@@ -221,6 +242,7 @@ def main() -> int:
                 p["date"],
                 p["time"],
                 p["name"],
+                p["staff"],
                 p["title"],
                 p["body"],
                 p["image_filename"] or "",
