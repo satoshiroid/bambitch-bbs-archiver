@@ -190,6 +190,12 @@ NAME_SPLIT = re.compile(r"[、,，]")
 VISITS_SHEET = "来店履歴"
 RANK_SHEET = "来店回数"
 WEEKDAY_SHEET = "曜日別"
+HOUR_SHEET = "時間帯別"
+MONTH_SHEET = "月次推移"
+NETWORK_SHEET = "同伴ネットワーク"
+DERIVED_SHEETS = (
+    VISITS_SHEET, RANK_SHEET, WEEKDAY_SHEET, HOUR_SHEET, MONTH_SHEET, NETWORK_SHEET,
+)
 JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 
 
@@ -207,12 +213,17 @@ def weekday_jp(date: str) -> str:
 
 
 def rebuild_visit_sheets(wb) -> None:
-    """posts シートから、個人単位の「来店履歴」と「来店回数」シートを作り直す。
+    """posts シートから、個人単位の各集計シートを作り直す。
 
     - 来店履歴: 1 人 1 行に展開。何回目 = その人の累積来店回数(No. 昇順=時系列)。
     - 来店回数: 個人ごとの合計来店回数・初回・最終日。回数の多い順。
+    - 曜日別 / 時間帯別 / 月次推移: 投稿件数・延べ来店人数などの集計。
+    - 同伴ネットワーク: 一緒に来た人物ペアの共起回数(エッジ一覧)。
     - お店(★BAMBITCH★)名義は来店客ではないので集計対象外。
     """
+    from collections import Counter
+    from itertools import combinations
+
     ws = wb[SHEET_NAME]
     posts = []
     for no, date, time_, name, staff, title, body, img in ws.iter_rows(
@@ -223,7 +234,7 @@ def rebuild_visit_sheets(wb) -> None:
         posts.append((int(no), date, time_, name, title, body))
     posts.sort(key=lambda x: x[0])  # No. 昇順 = 時系列
 
-    for sn in (VISITS_SHEET, RANK_SHEET, WEEKDAY_SHEET):
+    for sn in DERIVED_SHEETS:
         if sn in wb.sheetnames:
             del wb[sn]
 
@@ -235,20 +246,46 @@ def rebuild_visit_sheets(wb) -> None:
     totals: dict[str, int] = {}
     first_seen: dict[str, str] = {}
     last_seen: dict[str, str] = {}
-    wd_visits: dict[str, int] = {d: 0 for d in JP_WEEKDAYS}  # 曜日→延べ来店人数
-    wd_posts: dict[str, int] = {d: 0 for d in JP_WEEKDAYS}   # 曜日→投稿件数
+    wd_visits: dict[str, int] = {d: 0 for d in JP_WEEKDAYS}
+    wd_posts: dict[str, int] = {d: 0 for d in JP_WEEKDAYS}
+    hr_visits = [0] * 24  # 時間帯(時)→延べ来店人数
+    hr_posts = [0] * 24   # 時間帯(時)→投稿件数
+    mon_posts: dict[str, int] = {}          # YYYY-MM→投稿件数
+    mon_visits: dict[str, int] = {}         # YYYY-MM→延べ来店人数
+    mon_people: dict[str, set] = {}         # YYYY-MM→ユニーク人物
+    pair_counts: Counter = Counter()        # (A,B)→同伴回数
+
     for no, date, time_, name, title, body in posts:
         wd = weekday_jp(date)
+        hour = int(time_[:2]) if isinstance(time_, str) and time_[:2].isdigit() else None
+        month = date[:7] if isinstance(date, str) and len(date) >= 7 else ""
+        people = split_names(name)
+
         if wd:
             wd_posts[wd] += 1
-        for person in split_names(name):
+        if hour is not None:
+            hr_posts[hour] += 1
+        if month:
+            mon_posts[month] = mon_posts.get(month, 0) + 1
+            mon_people.setdefault(month, set())
+
+        for person in people:
             counter[person] = counter.get(person, 0) + 1
             totals[person] = counter[person]
             first_seen.setdefault(person, date)
             last_seen[person] = date
             if wd:
                 wd_visits[wd] += 1
+            if hour is not None:
+                hr_visits[hour] += 1
+            if month:
+                mon_visits[month] = mon_visits.get(month, 0) + 1
+                mon_people[month].add(person)
             vh.append([date, wd, time_, no, person, counter[person], name, title, body])
+
+        # 同伴ペア(同一投稿に2名以上): 名前順に正規化して共起カウント
+        for a, b in combinations(sorted(set(people)), 2):
+            pair_counts[(a, b)] += 1
 
     rk = wb.create_sheet(RANK_SHEET)
     rk.append(["個人名", "来店回数", "初回", "最終"])
@@ -261,6 +298,24 @@ def rebuild_visit_sheets(wb) -> None:
     wk.freeze_panes = "A2"
     for d in JP_WEEKDAYS:
         wk.append([d, wd_posts[d], wd_visits[d]])
+
+    hs = wb.create_sheet(HOUR_SHEET)
+    hs.append(["時間帯", "投稿件数", "延べ来店人数"])
+    hs.freeze_panes = "A2"
+    for h in range(24):
+        hs.append([f"{h:02d}時台", hr_posts[h], hr_visits[h]])
+
+    ms = wb.create_sheet(MONTH_SHEET)
+    ms.append(["月", "投稿件数", "延べ来店人数", "ユニーク人数"])
+    ms.freeze_panes = "A2"
+    for month in sorted(mon_posts):
+        ms.append([month, mon_posts[month], mon_visits.get(month, 0), len(mon_people[month])])
+
+    nw = wb.create_sheet(NETWORK_SHEET)
+    nw.append(["人物A", "人物B", "同伴回数"])
+    nw.freeze_panes = "A2"
+    for (a, b), c in sorted(pair_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+        nw.append([a, b, c])
 
 
 def load_workbook_or_new():
