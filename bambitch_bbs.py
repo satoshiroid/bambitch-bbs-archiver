@@ -184,6 +184,62 @@ def download_image(img_url: str, filename: str) -> bool:
         return False
 
 
+# 名前欄の複数名の区切りは読点「、」とカンマ「,」「，」のみ。
+# 「・」(例: オ・スー)は 1 名の一部なので分割しない。
+NAME_SPLIT = re.compile(r"[、,，]")
+VISITS_SHEET = "来店履歴"
+RANK_SHEET = "来店回数"
+
+
+def split_names(name: str) -> list[str]:
+    """名前欄を個人名に分割する(空白のみは除く)。"""
+    return [p.strip() for p in NAME_SPLIT.split(name or "") if p.strip()]
+
+
+def rebuild_visit_sheets(wb) -> None:
+    """posts シートから、個人単位の「来店履歴」と「来店回数」シートを作り直す。
+
+    - 来店履歴: 1 人 1 行に展開。何回目 = その人の累積来店回数(No. 昇順=時系列)。
+    - 来店回数: 個人ごとの合計来店回数・初回・最終日。回数の多い順。
+    - お店(★BAMBITCH★)名義は来店客ではないので集計対象外。
+    """
+    ws = wb[SHEET_NAME]
+    posts = []
+    for no, date, time_, name, staff, title, body, img in ws.iter_rows(
+        min_row=2, values_only=True
+    ):
+        if no is None or name == STORE_NAME:
+            continue
+        posts.append((int(no), date, time_, name, title, body))
+    posts.sort(key=lambda x: x[0])  # No. 昇順 = 時系列
+
+    for sn in (VISITS_SHEET, RANK_SHEET):
+        if sn in wb.sheetnames:
+            del wb[sn]
+
+    vh = wb.create_sheet(VISITS_SHEET)
+    vh.append(["来店日", "時刻", "No.", "個人名", "何回目", "同伴(元の名前)", "題名", "本文"])
+    vh.freeze_panes = "A2"
+
+    counter: dict[str, int] = {}
+    totals: dict[str, int] = {}
+    first_seen: dict[str, str] = {}
+    last_seen: dict[str, str] = {}
+    for no, date, time_, name, title, body in posts:
+        for person in split_names(name):
+            counter[person] = counter.get(person, 0) + 1
+            totals[person] = counter[person]
+            first_seen.setdefault(person, date)
+            last_seen[person] = date
+            vh.append([date, time_, no, person, counter[person], name, title, body])
+
+    rk = wb.create_sheet(RANK_SHEET)
+    rk.append(["個人名", "来店回数", "初回", "最終"])
+    rk.freeze_panes = "A2"
+    for person in sorted(totals, key=lambda p: (-totals[p], p)):
+        rk.append([person, totals[person], first_seen[person], last_seen[person]])
+
+
 def load_workbook_or_new():
     """既存の bbs_log.xlsx を開く。無ければ見出し付きで新規作成する。"""
     if XLSX_PATH.exists():
@@ -250,6 +306,7 @@ def main() -> int:
         )
 
     if new_posts:
+        rebuild_visit_sheets(wb)  # 来店履歴・来店回数を最新化
         wb.save(XLSX_PATH)
         log(f"新規投稿 {len(new_posts)} 件をワークシートに追加しました。")
         for p in new_posts:
