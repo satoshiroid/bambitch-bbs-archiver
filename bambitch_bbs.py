@@ -189,11 +189,21 @@ def download_image(img_url: str, filename: str) -> bool:
 NAME_SPLIT = re.compile(r"[、,，]")
 VISITS_SHEET = "来店履歴"
 RANK_SHEET = "来店回数"
+WEEKDAY_SHEET = "曜日別"
+JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 
 
 def split_names(name: str) -> list[str]:
     """名前欄を個人名に分割する(空白のみは除く)。"""
     return [p.strip() for p in NAME_SPLIT.split(name or "") if p.strip()]
+
+
+def weekday_jp(date: str) -> str:
+    """'YYYY-MM-DD' → 曜日(月〜日)。パースできなければ空。"""
+    try:
+        return JP_WEEKDAYS[datetime.strptime(date, "%Y-%m-%d").weekday()]
+    except (ValueError, TypeError):
+        return ""
 
 
 def rebuild_visit_sheets(wb) -> None:
@@ -213,31 +223,44 @@ def rebuild_visit_sheets(wb) -> None:
         posts.append((int(no), date, time_, name, title, body))
     posts.sort(key=lambda x: x[0])  # No. 昇順 = 時系列
 
-    for sn in (VISITS_SHEET, RANK_SHEET):
+    for sn in (VISITS_SHEET, RANK_SHEET, WEEKDAY_SHEET):
         if sn in wb.sheetnames:
             del wb[sn]
 
     vh = wb.create_sheet(VISITS_SHEET)
-    vh.append(["来店日", "時刻", "No.", "個人名", "何回目", "同伴(元の名前)", "題名", "本文"])
+    vh.append(["来店日", "曜日", "時刻", "No.", "個人名", "何回目", "同伴(元の名前)", "題名", "本文"])
     vh.freeze_panes = "A2"
 
     counter: dict[str, int] = {}
     totals: dict[str, int] = {}
     first_seen: dict[str, str] = {}
     last_seen: dict[str, str] = {}
+    wd_visits: dict[str, int] = {d: 0 for d in JP_WEEKDAYS}  # 曜日→延べ来店人数
+    wd_posts: dict[str, int] = {d: 0 for d in JP_WEEKDAYS}   # 曜日→投稿件数
     for no, date, time_, name, title, body in posts:
+        wd = weekday_jp(date)
+        if wd:
+            wd_posts[wd] += 1
         for person in split_names(name):
             counter[person] = counter.get(person, 0) + 1
             totals[person] = counter[person]
             first_seen.setdefault(person, date)
             last_seen[person] = date
-            vh.append([date, time_, no, person, counter[person], name, title, body])
+            if wd:
+                wd_visits[wd] += 1
+            vh.append([date, wd, time_, no, person, counter[person], name, title, body])
 
     rk = wb.create_sheet(RANK_SHEET)
     rk.append(["個人名", "来店回数", "初回", "最終"])
     rk.freeze_panes = "A2"
     for person in sorted(totals, key=lambda p: (-totals[p], p)):
         rk.append([person, totals[person], first_seen[person], last_seen[person]])
+
+    wk = wb.create_sheet(WEEKDAY_SHEET)
+    wk.append(["曜日", "投稿件数", "延べ来店人数"])
+    wk.freeze_panes = "A2"
+    for d in JP_WEEKDAYS:
+        wk.append([d, wd_posts[d], wd_visits[d]])
 
 
 def load_workbook_or_new():
